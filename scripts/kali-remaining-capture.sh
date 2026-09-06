@@ -36,6 +36,48 @@ COMMITTED=false
 PUBLISHED=
 CLEANING=false
 PENDING_SIGNAL_STATUS=
+cleanup_remove() {
+  cleanup_remove_target=$2
+  cleanup_remove_pending_before=$PENDING_SIGNAL_STATUS
+  if rm "$@"; then
+    return 0
+  fi
+  if [ ! -e "$cleanup_remove_target" ] && \
+    [ ! -L "$cleanup_remove_target" ]; then
+    return 0
+  fi
+  if [ -z "$cleanup_remove_pending_before" ] && \
+    [ -n "$PENDING_SIGNAL_STATUS" ]; then
+    if rm "$@"; then
+      return 0
+    fi
+    [ ! -e "$cleanup_remove_target" ] && \
+      [ ! -L "$cleanup_remove_target" ] && return 0
+  fi
+  return 1
+}
+cleanup_move() {
+  cleanup_move_source=$1
+  cleanup_move_destination=$2
+  cleanup_move_pending_before=$PENDING_SIGNAL_STATUS
+  if mv "$cleanup_move_source" "$cleanup_move_destination"; then
+    return 0
+  fi
+  if [ ! -e "$cleanup_move_source" ] && \
+    [ -f "$cleanup_move_destination" ]; then
+    return 0
+  fi
+  if [ -z "$cleanup_move_pending_before" ] && \
+    [ -n "$PENDING_SIGNAL_STATUS" ] && \
+    [ -e "$cleanup_move_source" ]; then
+    if mv "$cleanup_move_source" "$cleanup_move_destination"; then
+      return 0
+    fi
+    [ ! -e "$cleanup_move_source" ] && \
+      [ -f "$cleanup_move_destination" ] && return 0
+  fi
+  return 1
+}
 cleanup() {
   [ "$CLEANING" != true ] || return 0
   CLEANING=true
@@ -47,12 +89,11 @@ cleanup() {
         backup=$STAGE/.previous.$name
         case " $PUBLISHED " in
           *" $name "*)
-            rm -f "$OUT_DIR/$name" || rollback_ok=false
+            cleanup_remove -f "$OUT_DIR/$name" || rollback_ok=false
             ;;
         esac
         if [ -e "$backup" ]; then
-          if ! mv "$backup" "$OUT_DIR/$name" && \
-            { [ -e "$backup" ] || [ ! -f "$OUT_DIR/$name" ]; }; then
+          if ! cleanup_move "$backup" "$OUT_DIR/$name"; then
             echo "unable to restore previous Kali remaining artifact: $name" >&2
             rollback_ok=false
           fi
@@ -60,7 +101,7 @@ cleanup() {
       done
     fi
     if [ "$rollback_ok" = true ]; then
-      if rm -rf "$STAGE"; then
+      if cleanup_remove -rf "$STAGE"; then
         STAGE=
         PUBLISHED=
       else
@@ -109,7 +150,13 @@ trap 'handle_signal 130' INT
 trap 'handle_signal 143' TERM
 
 mkdir -p "$OUT_DIR"
-STAGE=$(mktemp -d "$OUT_DIR/.kali-remaining.XXXXXX")
+# The parent trap must receive signals, but the creator must survive long
+# enough to return the pathname of any directory it creates. Otherwise a
+# signal between mkdir(2) and command-substitution output makes cleanup blind.
+STAGE=$(
+  trap '' HUP INT TERM
+  exec mktemp -d "$OUT_DIR/.kali-remaining.XXXXXX"
+)
 
 scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/pz-known-hosts \
   -o ConnectTimeout=8 -i "$KEYDIR/id_ed25519" \

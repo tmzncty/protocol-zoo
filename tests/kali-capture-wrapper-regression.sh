@@ -23,6 +23,7 @@ FIXTURE=$(CDPATH='' cd -- "$FIXTURE" && pwd -P)
 SH_BIN=${PZ_TEST_SHELL:-$(command -v sh)}
 PYTHON_BIN=${PZ_TEST_PYTHON:-$(command -v python || command -v python3)}
 REAL_MV=$(command -v mv)
+REAL_RM=$(command -v rm)
 REAL_MKTEMP=$(command -v mktemp)
 
 fail() {
@@ -50,6 +51,11 @@ count=0
 count=$((count + 1))
 printf '%s\n' "$count" >"$count_file"
 [ "${PZ_FAIL_MV_CALL-}" != "$count" ] || exit 75
+[ "${PZ_FAIL_MV_CALL_SECOND-}" != "$count" ] || exit 75
+if [ "${PZ_GROUP_SIGNAL_MV_CALL-}" = "$count" ]; then
+  kill -"${PZ_GROUP_SIGNAL:?}" "$PPID"
+  kill -"$PZ_GROUP_SIGNAL" "$$"
+fi
 if [ "${PZ_SIGNAL_MV_CALL-}" = "$count" ]; then
   "${PZ_REAL_MV:?}" "$@"
   kill -TERM "$PPID"
@@ -58,9 +64,30 @@ fi
 exec "${PZ_REAL_MV:?}" "$@"
 EOF
 
+cat >"$BIN/rm" <<'EOF'
+#!/bin/sh
+count_file=${PZ_RM_COUNT_FILE:?}
+count=0
+[ ! -f "$count_file" ] || count=$(cat "$count_file")
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
+[ "${PZ_FAIL_RM_CALL-}" != "$count" ] || exit 76
+if [ "${PZ_SIGNAL_RM_CALL-}" = "$count" ]; then
+  kill -"${PZ_RM_SIGNAL:?}" "$PPID"
+  kill -"$PZ_RM_SIGNAL" "$$"
+fi
+exec "${PZ_REAL_RM:?}" "$@"
+EOF
+
 cat >"$BIN/mktemp" <<'EOF'
 #!/bin/sh
 stage=$("${PZ_REAL_MKTEMP:?}" "$@") || exit
+if [ -n "${PZ_ABORT_MKTEMP_SIGNAL-}" ]; then
+  printf '%s\n' "$stage" >"${PZ_STAGE_RECORD:?}"
+  kill -"$PZ_ABORT_MKTEMP_SIGNAL" "$PPID"
+  kill -"$PZ_ABORT_MKTEMP_SIGNAL" "$$"
+  sleep 1
+fi
 printf '%s\n' "$stage"
 if [ "${PZ_SIGNAL_MKTEMP-}" = 1 ]; then
   kill -TERM "$PPID"
@@ -225,7 +252,7 @@ schema = json.load(open(native(args[2]), encoding="utf-8"))
 Draft202012Validator.check_schema(schema)
 Draft202012Validator(schema).validate(instance)
 PY
-chmod +x "$BIN/python3" "$BIN/ssh" "$BIN/scp" "$BIN/mv" "$BIN/mktemp" "$BIN/jq" \
+chmod +x "$BIN/python3" "$BIN/ssh" "$BIN/scp" "$BIN/mv" "$BIN/rm" "$BIN/mktemp" "$BIN/jq" \
   "$BIN/jsonschema" \
   2>/dev/null || true
 
@@ -235,17 +262,27 @@ run_wrapper() {
   PZ_EFFECT_LOG=$EFFECT_LOG \
   PZ_SCP_COUNT_FILE=$TMP/scp-count \
   PZ_MV_COUNT_FILE=$TMP/mv-count \
+  PZ_RM_COUNT_FILE=$TMP/rm-count \
   PZ_OUTSIDE_FILE=$TMP/outside-file \
   PZ_TEST_PYTHON=$PYTHON_BIN \
   PZ_REAL_MV=$REAL_MV \
+  PZ_REAL_RM=$REAL_RM \
   PZ_REAL_MKTEMP=$REAL_MKTEMP \
+  PZ_STAGE_RECORD=$TMP/stage-record \
   PZ_KALI_KEYDIR=$KEYDIR \
   PZ_KALI_HOST=203.0.113.77 \
   PZ_FAIL_SSH=${PZ_FAIL_SSH-} \
   PZ_FAIL_SCP_CALL=${PZ_FAIL_SCP_CALL-} \
   PZ_FAIL_MV_CALL=${PZ_FAIL_MV_CALL-} \
+  PZ_FAIL_MV_CALL_SECOND=${PZ_FAIL_MV_CALL_SECOND-} \
   PZ_SIGNAL_MV_CALL=${PZ_SIGNAL_MV_CALL-} \
+  PZ_GROUP_SIGNAL_MV_CALL=${PZ_GROUP_SIGNAL_MV_CALL-} \
+  PZ_GROUP_SIGNAL=${PZ_GROUP_SIGNAL-} \
+  PZ_FAIL_RM_CALL=${PZ_FAIL_RM_CALL-} \
+  PZ_SIGNAL_RM_CALL=${PZ_SIGNAL_RM_CALL-} \
+  PZ_RM_SIGNAL=${PZ_RM_SIGNAL-} \
   PZ_SIGNAL_MKTEMP=${PZ_SIGNAL_MKTEMP-} \
+  PZ_ABORT_MKTEMP_SIGNAL=${PZ_ABORT_MKTEMP_SIGNAL-} \
   PZ_SCTP_PCAP_SHAPE=${PZ_SCTP_PCAP_SHAPE-} \
   PZ_SCTP_JSON_SHAPE=${PZ_SCTP_JSON_SHAPE-} \
   PZ_UDPLITE_SHAPE=${PZ_UDPLITE_SHAPE-} \
@@ -436,6 +473,267 @@ for script in kali-sctp-capture.sh kali-remaining-capture.sh; do
     find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 >&2
     fail "$script leaked staging after TERM from mktemp"
   }
+done
+
+# A foreground signal reaches both the wrapper and mktemp. If mktemp dies after
+# creating the directory but before returning its pathname, the parent cannot
+# remove that otherwise-unreachable staging path. Delay the handoff after each
+# injected signal so this does not pass merely because the child exits first.
+for signal_and_status in HUP:129 INT:130 TERM:143; do
+  signal=${signal_and_status%:*}
+  expected_status=${signal_and_status#*:}
+  for script in kali-sctp-capture.sh kali-remaining-capture.sh; do
+    target=captures/${script%.sh}-aborted-mktemp-${signal}
+    rm -rf "$FIXTURE/${target:?}"
+    rm -f "$TMP/scp-count" "$TMP/mv-count" "$TMP/stage-record"
+    if PZ_ABORT_MKTEMP_SIGNAL=$signal run_wrapper \
+      "$FIXTURE/scripts/$script" "$target" >"$TMP/output" 2>&1; then
+      fail "$script swallowed $signal that interrupted mktemp before output"
+    else
+      actual_status=$?
+    fi
+    [ "$actual_status" -eq "$expected_status" ] || \
+      fail "$script translated $signal during mktemp to status $actual_status"
+    [ -s "$TMP/stage-record" ] || fail "$script did not reach the mktemp probe"
+    [ -d "$FIXTURE/$target" ] || fail "$script removed its output directory"
+    [ "$(find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 | wc -l)" -eq 0 ] || {
+      find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 >&2
+      fail "$script leaked staging when mktemp was interrupted before output"
+    }
+  done
+done
+
+# A foreground signal reaches cleanup's current rm child as well as the
+# wrapper. Killing that child before it removes STAGE must not strand the
+# otherwise-empty private directory after a complete publication.
+for signal_and_status in HUP:129 INT:130 TERM:143; do
+  signal=${signal_and_status%:*}
+  expected_status=${signal_and_status#*:}
+  for script_and_call in kali-sctp-capture.sh:2 kali-remaining-capture.sh:1; do
+    script=${script_and_call%:*}
+    rm_call=${script_and_call#*:}
+    case "$script" in
+      kali-sctp-capture.sh) expected_files=2 ;;
+      kali-remaining-capture.sh) expected_files=3 ;;
+    esac
+    target=captures/${script%.sh}-cleanup-rm-${signal}
+    rm -rf "$FIXTURE/${target:?}"
+    rm -f "$TMP/scp-count" "$TMP/mv-count" "$TMP/rm-count"
+    if PZ_SIGNAL_RM_CALL=$rm_call PZ_RM_SIGNAL=$signal run_wrapper \
+      "$FIXTURE/scripts/$script" "$target" >"$TMP/output" 2>&1; then
+      fail "$script swallowed $signal that interrupted cleanup rm"
+    else
+      actual_status=$?
+    fi
+    [ "$actual_status" -eq "$expected_status" ] || \
+      fail "$script translated cleanup $signal to status $actual_status"
+    [ "$(find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 | wc -l)" \
+      -eq "$expected_files" ] || {
+      find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 >&2
+      fail "$script stranded staging after cleanup $signal"
+    }
+  done
+done
+
+prepare_old_artifact_set() {
+  old_script=$1
+  old_target=$2
+  old_marker=$3
+  rm -rf "$FIXTURE/${old_target:?}"
+  mkdir -p "$FIXTURE/$old_target"
+  printf 'unrelated %s\n' "$old_marker" >"$FIXTURE/$old_target/unknown.keep"
+  case "$old_script" in
+    kali-sctp-capture.sh)
+      printf 'old pcap %s\n' "$old_marker" >"$FIXTURE/$old_target/sctp.pcap"
+      printf 'old json %s\n' "$old_marker" >"$FIXTURE/$old_target/sctp.json"
+      ;;
+    kali-remaining-capture.sh)
+      for old_protocol in udplite gre ipip; do
+        printf 'old %s %s\n' "$old_protocol" "$old_marker" \
+          >"$FIXTURE/$old_target/$old_protocol.pcapng"
+      done
+      ;;
+  esac
+}
+
+assert_old_artifact_set() {
+  old_script=$1
+  old_target=$2
+  old_marker=$3
+  [ "$(cat "$FIXTURE/$old_target/unknown.keep")" = \
+    "unrelated $old_marker" ] || fail "$old_script damaged unrelated output"
+  case "$old_script" in
+    kali-sctp-capture.sh)
+      [ "$(cat "$FIXTURE/$old_target/sctp.pcap")" = \
+        "old pcap $old_marker" ] && \
+        [ "$(cat "$FIXTURE/$old_target/sctp.json")" = \
+        "old json $old_marker" ] || \
+        fail "$old_script did not restore its old pair"
+      old_expected_count=3
+      ;;
+    kali-remaining-capture.sh)
+      for old_protocol in udplite gre ipip; do
+        [ "$(cat "$FIXTURE/$old_target/$old_protocol.pcapng")" = \
+          "old $old_protocol $old_marker" ] || \
+          fail "$old_script did not restore $old_protocol"
+      done
+      old_expected_count=4
+      ;;
+  esac
+  [ "$(find "$FIXTURE/$old_target" -mindepth 1 -maxdepth 1 | wc -l)" \
+    -eq "$old_expected_count" ] || {
+    find "$FIXTURE/$old_target" -mindepth 1 -maxdepth 1 >&2
+    fail "$old_script left staging or mixed artifacts"
+  }
+}
+
+assert_cleanup_child_signal_rollback() {
+  rollback_signal=$1
+  rollback_expected_status=$2
+  rollback_script=$3
+  rollback_phase=$4
+  case "$rollback_script:$rollback_phase" in
+    kali-sctp-capture.sh:published-remove)
+      rollback_publish_fail=4
+      rollback_child_call=1
+      rollback_child='rm'
+      ;;
+    kali-sctp-capture.sh:restore)
+      rollback_publish_fail=4
+      rollback_child_call=5
+      rollback_child='mv'
+      ;;
+    kali-remaining-capture.sh:published-remove)
+      rollback_publish_fail=6
+      rollback_child_call=1
+      rollback_child='rm'
+      ;;
+    kali-remaining-capture.sh:restore)
+      rollback_publish_fail=6
+      rollback_child_call=7
+      rollback_child='mv'
+      ;;
+  esac
+  rollback_marker=$rollback_phase-$rollback_signal
+  rollback_target=captures/${rollback_script%.sh}-$rollback_marker
+  prepare_old_artifact_set \
+    "$rollback_script" "$rollback_target" "$rollback_marker"
+  rm -f "$TMP/scp-count" "$TMP/mv-count" "$TMP/rm-count"
+  if [ "$rollback_child" = rm ]; then
+    if PZ_FAIL_MV_CALL=$rollback_publish_fail \
+      PZ_SIGNAL_RM_CALL=$rollback_child_call \
+      PZ_RM_SIGNAL=$rollback_signal run_wrapper \
+      "$FIXTURE/scripts/$rollback_script" "$rollback_target" \
+      >"$TMP/output" 2>&1; then
+      fail "$rollback_script swallowed $rollback_signal during published removal"
+    else
+      rollback_status=$?
+    fi
+  else
+    if PZ_FAIL_MV_CALL=$rollback_publish_fail \
+      PZ_GROUP_SIGNAL_MV_CALL=$rollback_child_call \
+      PZ_GROUP_SIGNAL=$rollback_signal run_wrapper \
+      "$FIXTURE/scripts/$rollback_script" "$rollback_target" \
+      >"$TMP/output" 2>&1; then
+      fail "$rollback_script swallowed $rollback_signal during restore"
+    else
+      rollback_status=$?
+    fi
+  fi
+  [ "$rollback_status" -eq "$rollback_expected_status" ] || \
+    fail "$rollback_script translated rollback $rollback_signal to $rollback_status"
+  assert_old_artifact_set \
+    "$rollback_script" "$rollback_target" "$rollback_marker"
+}
+
+for signal_and_status in HUP:129 INT:130 TERM:143; do
+  signal=${signal_and_status%:*}
+  expected_status=${signal_and_status#*:}
+  for script in kali-sctp-capture.sh kali-remaining-capture.sh; do
+    assert_cleanup_child_signal_rollback \
+      "$signal" "$expected_status" "$script" published-remove
+    assert_cleanup_child_signal_rollback \
+      "$signal" "$expected_status" "$script" restore
+  done
+done
+
+# A persistent cleanup failure without a newly pending signal is not retried
+# or hidden. The complete new set remains published and the private staging
+# directory is retained for inspection.
+for script_and_call in kali-sctp-capture.sh:2 kali-remaining-capture.sh:1; do
+  script=${script_and_call%:*}
+  rm_call=${script_and_call#*:}
+  target=captures/${script%.sh}-persistent-cleanup-rm
+  rm -rf "$FIXTURE/${target:?}"
+  rm -f "$TMP/scp-count" "$TMP/mv-count" "$TMP/rm-count"
+  if PZ_FAIL_RM_CALL=$rm_call run_wrapper \
+    "$FIXTURE/scripts/$script" "$target" >"$TMP/output" 2>&1; then
+    fail "$script hid a persistent staging cleanup failure"
+  fi
+  [ "$(cat "$TMP/rm-count")" -eq "$rm_call" ] || \
+    fail "$script retried a cleanup failure without a pending signal"
+  grep -Fq 'retained failed Kali' "$TMP/output" || \
+    fail "$script hid its retained staging diagnostic"
+  [ "$(find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 \
+    -name '.kali-*' | wc -l)" -eq 1 ] || \
+    fail "$script did not retain exactly one failed staging directory"
+  case "$script" in
+    kali-sctp-capture.sh)
+      [ -s "$FIXTURE/$target/sctp.pcap" ] && \
+        [ -s "$FIXTURE/$target/sctp.json" ] || \
+        fail "$script damaged the committed pair after cleanup failure"
+      ;;
+    kali-remaining-capture.sh)
+      for protocol in udplite gre ipip; do
+        [ -s "$FIXTURE/$target/$protocol.pcapng" ] || \
+          fail "$script damaged committed $protocol after cleanup failure"
+      done
+      ;;
+  esac
+done
+
+# A persistent restore failure is likewise not retried. It returns nonzero,
+# keeps the old missing artifact in its exact backup, and never leaves a new
+# version of that artifact in the final path.
+for script in kali-sctp-capture.sh kali-remaining-capture.sh; do
+  target=captures/${script%.sh}-persistent-restore-mv
+  marker=persistent-restore
+  prepare_old_artifact_set "$script" "$target" "$marker"
+  rm -f "$TMP/scp-count" "$TMP/mv-count" "$TMP/rm-count"
+  case "$script" in
+    kali-sctp-capture.sh)
+      publish_fail=4
+      restore_fail=5
+      failed_name=sctp.pcap
+      failed_label=pcap
+      expected_mv_count=6
+      ;;
+    kali-remaining-capture.sh)
+      publish_fail=6
+      restore_fail=7
+      failed_name=udplite.pcapng
+      failed_label=udplite
+      expected_mv_count=9
+      ;;
+  esac
+  if PZ_FAIL_MV_CALL=$publish_fail PZ_FAIL_MV_CALL_SECOND=$restore_fail \
+    run_wrapper "$FIXTURE/scripts/$script" "$target" \
+    >"$TMP/output" 2>&1; then
+    fail "$script hid a persistent restore failure"
+  fi
+  [ "$(cat "$TMP/mv-count")" -eq "$expected_mv_count" ] || \
+    fail "$script retried a restore failure without a pending signal"
+  [ ! -e "$FIXTURE/$target/$failed_name" ] || \
+    fail "$script left a new final after its old restore failed"
+  retained_stage=$(find "$FIXTURE/$target" -mindepth 1 -maxdepth 1 \
+    -type d -name '.kali-*')
+  [ -n "$retained_stage" ] && \
+    [ "$(cat "$retained_stage/.previous.$failed_name")" = \
+      "old $failed_label $marker" ] || \
+    fail "$script did not retain the failed old-artifact backup"
+  grep -Fq 'unable to restore previous Kali' "$TMP/output" && \
+    grep -Fq 'retained failed Kali' "$TMP/output" || \
+    fail "$script hid its restore failure diagnostics"
 done
 
 # A mid-publication failure restores an older complete set, not a mixture.
@@ -673,9 +971,11 @@ BASH
     PZ_EFFECT_LOG=$EFFECT_LOG \
     PZ_SCP_COUNT_FILE=$TMP/scp-count \
     PZ_MV_COUNT_FILE=$TMP/mv-count \
+    PZ_RM_COUNT_FILE=$TMP/rm-count \
     PZ_OUTSIDE_FILE=$TMP/outside-file \
     PZ_TEST_PYTHON=$PYTHON_BIN \
     PZ_REAL_MV=$REAL_MV \
+    PZ_REAL_RM=$REAL_RM \
     PZ_REAL_MKTEMP=$REAL_MKTEMP \
     PZ_KALI_KEYDIR=$KEYDIR \
     PZ_KALI_HOST=203.0.113.77 \
