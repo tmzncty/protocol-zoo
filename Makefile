@@ -1,4 +1,4 @@
-.PHONY: validate fixtures capture real-app sctp remaining era2-fixtures era2-capture era2-network era2-ipv6 era2-rip era2-ppp era2-validate era2-static era3-validate test-capture-paths test-kali-capture-wrappers test-era3-validator capabilities experiment clean check
+.PHONY: validate fixtures capture real-app sctp remaining era2-fixtures era2-capture era2-network era2-ipv6 era2-rip era2-ppp era2-validate era2-static era3-validate test-capture-paths test-kali-capture-wrappers test-era3-validator test-check-order capabilities experiment clean check
 validate:
 	./scripts/experiment.sh validate
 fixtures:
@@ -41,4 +41,11 @@ test-kali-capture-wrappers:
 	sh ./tests/kali-capture-wrapper-regression.sh
 test-era3-validator:
 	sh ./tests/era3-validator-regression.sh
-check: fixtures capabilities validate era2-fixtures era2-static era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate
+test-check-order:
+	+sh ./tests/check-order-regression.sh "$(MAKE)"
+# Generators rewrite evidence consumed by validation. Keep each phase parallel,
+# but finish every generator before starting any reader. Standalone validation
+# targets deliberately retain their existing no-generation behavior.
+check:
+	$(MAKE) fixtures capabilities era2-fixtures era2-static
+	$(MAKE) validate era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order
