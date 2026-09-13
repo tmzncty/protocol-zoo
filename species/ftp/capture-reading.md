@@ -63,7 +63,11 @@ node --test tests/ftp-evidence.test.js
 
 本次逐帧校对使用成熟解码器 Scapy 2.6.1 离线读取这三份 pcapng，再与原有 TSV 对照；上述 tshark 命令是等价的读法示例，不是本次执行过 tshark 的声明。Node 检查器绑定经复核的 pcap SHA-256、TSV、帧数、端点和会话归属；它**不是新的抓包解码器**，也不验证任意新抓包的协议正确性。更换归档须重新解码和复核，不能只改预期哈希让检查变绿。
 
-当前工作流和 `make check` **没有运行这项 FTP 检查**，请单独执行上述两个 Node 命令；其他 Era 的绿色 CI 不能替它背书。
+有 GNU Make 时，也可单独运行只读入口 `make ftp-validate test-ftp-evidence`；它们分别执行上述两个 Node 命令，不生成 fixture、不需要抓包工具或 root。需使用支持 `node --test` 的 Node.js；本次本地验证使用 Node 24.11.1，不需 npm 依赖。
+
+本地 `make check` 在生成阶段结束后包含这两项 FTP 检查；但整个 aggregate 仍会重写其他实验的 fixture／能力记录，并需要原有 Linux 工具，不能当成纯只读命令在待保留的归档上随意运行。调度回归使用隔离替身，不等于全套生产协议验证。
+
+**当前 GitHub 工作流仍未运行这两项 FTP 检查**，也没有调用这个 Makefile；其他 Era 的绿色 CI 不能替它们背书。没有 GNU Make 时，仍可直接执行上述两个 Node 命令。
 
 ## 复现边界与安全
 
