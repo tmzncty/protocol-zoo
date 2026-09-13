@@ -10,11 +10,13 @@
 
 ## 实验记录
 
-`scripts/real-app-capture.sh` 使用 `pyftpdlib 1.5.9` 在 `pz-server` 的 `198.18.0.2:2121` 启动成熟 FTP 服务，`pz-client` 使用系统 `ftp` 客户端完成登录、EPSV 被动数据连接和 `RETR`；结果见 `captures/real-app-netns/ftp.pcapng`、`ftp.frames.tsv` 与两个脱敏 transcript。control 与 data 四元组、`USER/PASS`、`230`、`EPSV/229`、`RETR/125/226` 均可由抓包复核。实验只使用合成账号和文件，不连接公网。
+`scripts/real-app-capture.sh` 使用 `pyftpdlib 1.5.9` 在 `pz-server` 的 `198.18.0.2:2121` 启动成熟 FTP 服务。归档 `captures/real-app-netns/ftp.pcapng` 共 64 帧：1–42 是成功的 EPSV/RETR 会话，43–64 是另一次仅登录、查询能力后退出的会话。后者没有主动模式数据连接；名为 `ftp-active.log` 的 transcript 记录了 `?Invalid command.`，不能当作成功主动传输的证据。实验使用合成账号和文件，不连接公网。
 
 ## Active mode 真实记录
 
-独立 active-mode capture 见 `captures/real-app-netns/ftp-active.pcapng` 和 `ftp-active.frames.tsv`：tnftp 使用 `EPRT`（frame 18），服务器回复 `200`（frame 22），随后 `LIST`（frame 23）和 `226`（frame 30）。与 passive capture 中 client→server 的 `EPSV/229` 和 client 发起 data 四元组对照，可见 active mode 由 server 发起 data connection。两种模式均只使用 namespace 内合成账号与文件。
+独立 active-mode capture 见 `captures/real-app-netns/ftp-active.pcapng` 和 `ftp-active.frames.tsv`：36 帧，控制端口为 2122。`EPRT`（frame 18）指定客户端监听端口 47135；server 发出的 data SYN（frame 19）实际来自 **48707，而不是 20**，随后可见 `LIST`（frame 23）和 `226`（frame 30）。当前脚本不生成这份独立抓包，其完整生成命令、环境和对应 transcript 尚缺记录，不能宣称已形成复现闭环。
+
+从 [逐帧读包：谁敲门，谁搬文件？](capture-reading.md) 对照两份归档：主动/被动区分的是**谁发起数据连接**，不是文件必须往相反方向走。页面包含四元组、帧号、RFC 定位及只读检查命令。
 
 ## 安全
 
