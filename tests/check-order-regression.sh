@@ -46,14 +46,31 @@ case "${0##*/}" in
   kali-capture-wrapper-regression.sh) target=test-kali-capture-wrappers ;;
   era3-validator-regression.sh) target=test-era3-validator ;;
   check-order-regression.sh) target=test-check-order ;;
+  node)
+    if [ "$#" -eq 1 ] && [ "$1" = scripts/validate-ftp-evidence.js ]; then
+      target=ftp-validate
+    elif [ "$#" -eq 2 ] && [ "$1" = --test ] && [ "$2" = tests/ftp-evidence.test.js ]; then
+      target=test-ftp-evidence
+    else
+      echo 'unexpected fixture Node arguments' >&2
+      exit 97
+    fi
+    ;;
   *) echo 'unexpected fixture recipe' >&2; exit 91 ;;
 esac
 case "$target" in
   fixtures|capabilities|era2-fixtures|era2-static) kind=generator ;;
-  validate|era2-validate|era3-validate|test-capture-paths|test-kali-capture-wrappers|test-era3-validator|test-check-order) kind=consumer ;;
+  validate|era2-validate|era3-validate|test-capture-paths|test-kali-capture-wrappers|test-era3-validator|test-check-order|ftp-validate|test-ftp-evidence) kind=consumer ;;
   *) echo "unexpected fixture target: $target" >&2; exit 92 ;;
 esac
 mkdir "$EVENTS/start.$target" || { echo "duplicate recipe: $target" >&2; exit 93; }
+# Model an unavailable Node runtime without falling through to a host binary.
+# This is an explicit exit-127 simulation, not a claim that host Node is absent.
+if [ "$PZ_CHECK_MODE" = node-unavailable ]; then
+  [ "${0##*/}" = node ] || exit 98
+  : > "$EVENTS/unavailable-node.$target"
+  exit 127
+fi
 wait_for() {
   attempts=0
   while [ ! -e "$1" ] && [ "$attempts" -lt 100 ]; do
@@ -112,6 +129,12 @@ else
     : > "$EVENTS/injected-consumer-failure"
     exit 32
   fi
+  case "$PZ_CHECK_MODE:$target" in
+    fail-ftp-validate:ftp-validate|fail-test-ftp-evidence:test-ftp-evidence)
+      : > "$EVENTS/injected-failure.$target"
+      exit 33
+      ;;
+  esac
   if [ "$PZ_CHECK_MODE" = parallel ]; then
     case "$target" in
       fixtures) wait_for "$EVENTS/start.capabilities" ;;
@@ -127,7 +150,7 @@ EOF
 new_fixture() {
   name=$1
   FIXTURE=$TMP/$name
-  mkdir -p "$FIXTURE/scripts" "$FIXTURE/tests" "$FIXTURE/events"
+  mkdir -p "$FIXTURE/scripts" "$FIXTURE/tests" "$FIXTURE/events" "$FIXTURE/bin"
   cp "$ROOT/Makefile" "$FIXTURE/Makefile"
   cmp "$ROOT/Makefile" "$FIXTURE/Makefile" || fail 'Makefile copy differs'
   for script in experiment.sh era2-fixtures.sh era2-static-results.sh era2-validate.sh era3-validate.sh; do
@@ -136,7 +159,8 @@ new_fixture() {
   for script in capture-path-regression.sh kali-capture-wrapper-regression.sh era3-validator-regression.sh check-order-regression.sh; do
     cp "$TMP/recipe.sh" "$FIXTURE/tests/$script"
   done
-  chmod +x "$FIXTURE"/scripts/*.sh "$FIXTURE"/tests/*.sh
+  cp "$TMP/recipe.sh" "$FIXTURE/bin/node"
+  chmod +x "$FIXTURE"/scripts/*.sh "$FIXTURE"/tests/*.sh "$FIXTURE/bin/node"
 }
 
 run_make() {
@@ -146,7 +170,7 @@ run_make() {
   status=0
   # Strip unrelated inherited makefile/shell injection, but exercise job flags
   # either explicitly or through MAKEFLAGS, including recursive stage makes.
-  PZ_CHECK_MODE=$mode MAKEFLAGS=$inherited MFLAGS= GNUMAKEFLAGS= MAKEFILES= BASH_ENV= ENV= \
+  PATH="$FIXTURE/bin:$PATH" PZ_CHECK_MODE=$mode MAKEFLAGS=$inherited MFLAGS= GNUMAKEFLAGS= MAKEFILES= BASH_ENV= ENV= \
     timeout -k 2s 25s "$MAKE_BIN" --no-print-directory -C "$FIXTURE" "SHELL=$SH_BIN" "$@" \
     > "$TMP/output" 2>&1 || status=$?
   cp "$TMP/output" "$FIXTURE/make.log"
@@ -154,7 +178,7 @@ run_make() {
 }
 
 assert_all_done() {
-  for target in fixtures capabilities era2-fixtures era2-static validate era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order; do
+  for target in fixtures capabilities era2-fixtures era2-static validate era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order ftp-validate test-ftp-evidence; do
     [ -e "$FIXTURE/events/done.$target" ] || fail "missing completed target: $target"
   done
 }
@@ -198,7 +222,7 @@ echo 'PASS: inherited MAKEFLAGS preserves ordering and parallelism'
 new_fixture generator-failure
 run_make fail-generator '' -j4 check
 [ "$status" -eq 2 ] && [ -e "$FIXTURE/events/injected-generator-failure" ] || fail 'generator failure did not propagate'
-for target in validate era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order; do
+for target in validate era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order ftp-validate test-ftp-evidence; do
   [ ! -e "$FIXTURE/events/start.$target" ] || fail "consumer ran after generation failure: $target"
 done
 echo 'PASS: generation failure prevents all consumer recipes'
@@ -207,6 +231,13 @@ new_fixture consumer-failure
 run_make fail-consumer '' -j4 check
 [ "$status" -eq 2 ] && [ -e "$FIXTURE/events/injected-consumer-failure" ] || fail 'consumer failure did not propagate'
 echo 'PASS: consumer failure propagates to check'
+
+for ftp_target in ftp-validate test-ftp-evidence; do
+  new_fixture "failure-$ftp_target"
+  run_make "fail-$ftp_target" '' -j4 check
+  [ "$status" -eq 2 ] && [ -e "$FIXTURE/events/injected-failure.$ftp_target" ] || fail "$ftp_target failure did not propagate to check"
+  echo "PASS: $ftp_target failure propagates to check"
+done
 
 new_fixture standalone
 run_make standalone '' -j4 validate era2-validate
@@ -220,10 +251,41 @@ echo 'PASS: standalone validators do not invoke generators'
 new_fixture default-target
 run_make standalone ''
 [ "$status" -eq 0 ] && [ -e "$FIXTURE/events/done.validate" ] || fail 'default target is no longer validation'
-for target in fixtures capabilities era2-fixtures era2-static era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order; do
+for target in fixtures capabilities era2-fixtures era2-static era2-validate test-capture-paths test-kali-capture-wrappers test-era3-validator era3-validate test-check-order ftp-validate test-ftp-evidence; do
   [ ! -e "$FIXTURE/events/start.$target" ] || fail "default validation invoked unexpected target: $target"
 done
 echo 'PASS: default make remains standalone validation'
+
+assert_only_ftp() {
+  for target in ftp-validate test-ftp-evidence; do
+    [ -e "$FIXTURE/events/done.$target" ] || fail "standalone FTP reader was skipped: $target"
+  done
+  for target in fixtures capabilities era2-fixtures era2-static validate era2-validate era3-validate test-capture-paths test-kali-capture-wrappers test-era3-validator test-check-order; do
+    [ ! -e "$FIXTURE/events/start.$target" ] || fail "standalone FTP invoked unrelated target: $target"
+  done
+}
+
+new_fixture standalone-ftp
+run_make standalone '' -j2 ftp-validate test-ftp-evidence
+[ "$status" -eq 0 ] || fail 'standalone FTP readers failed'
+assert_only_ftp
+echo 'PASS: standalone FTP readers invoke only exact Node commands'
+
+new_fixture phony-ftp
+: > "$FIXTURE/ftp-validate"
+: > "$FIXTURE/test-ftp-evidence"
+run_make standalone '' -j2 ftp-validate test-ftp-evidence
+[ "$status" -eq 0 ] || fail 'phony FTP readers failed'
+assert_only_ftp
+echo 'PASS: target-named files do not suppress FTP readers'
+
+for ftp_target in ftp-validate test-ftp-evidence; do
+  new_fixture "node-unavailable-$ftp_target"
+  run_make node-unavailable '' "$ftp_target"
+  [ "$status" -eq 2 ] && [ -e "$FIXTURE/events/unavailable-node.$ftp_target" ] || fail "$ftp_target hid unavailable-runtime error"
+  [ ! -e "$FIXTURE/events/done.$ftp_target" ] || fail "$ftp_target completed without Node"
+  echo "PASS: $ftp_target propagates simulated unavailable Node (exit 127)"
+done
 
 new_fixture standalone-test
 run_make standalone '' test-check-order

@@ -18,7 +18,8 @@
   "result": {
     "handshake": "pass",
     "capture": "captures/real-app-netns/{telnet,ftp}.pcapng",
-    "frames": 74,
+    "frames": 71,
+    "frame_scope": "telnet.pcapng + ftp.pcapng only; the supplemental ftp-active.pcapng is excluded",
     "telnet": {
       "handshake": "pass",
       "frames": 7,
@@ -26,20 +27,43 @@
     },
     "ftp": {
       "handshake": "pass",
+      "capture": "captures/real-app-netns/ftp.pcapng",
+      "frames": 64,
       "control_connections": 2,
+      "passive_control_connection": "198.18.0.1:40734 -> 198.18.0.2:2121",
       "passive_data_connection": "198.18.0.1:40810 -> 198.18.0.2:19000",
+      "passive_frame_range": [1, 42],
+      "passive_frames": 42,
+      "passive_transcript": "captures/real-app-netns/ftp-passive.log",
       "retrieved_bytes": 25,
-      "active_data_connection": "198.18.0.2:20 -> 198.18.0.1:<ephemeral>",
-      "active_frames": 22,
-      "passive_frames": 40
+      "login_only_control_connection": "198.18.0.1:40750 -> 198.18.0.2:2121",
+      "login_only_frame_range": [43, 64],
+      "login_only_frames": 22,
+      "login_only_transcript": "captures/real-app-netns/ftp-active.log"
+    },
+    "ftp_active_supplement": {
+      "capture": "captures/real-app-netns/ftp-active.pcapng",
+      "frames": 36,
+      "control_connections": 1,
+      "control_connection": "198.18.0.1:33594 -> 198.18.0.2:2122",
+      "data_connection": "198.18.0.2:48707 -> 198.18.0.1:47135",
+      "eprt_frame": 18,
+      "data_syn_frame": 19,
+      "list_frame": 23,
+      "transfer_complete_frame": 30,
+      "transcript": null,
+      "reproduction": "generation command, capture filter and full environment not recorded for this separate capture; real-app-capture.sh does not generate it"
     }
   },
   "sanitized": true,
   "notes": [
-    "All traffic stayed inside documentation-range addresses in dedicated namespaces.",
+    "The original experiment used 198.18.0.0/15 benchmarking addresses in dedicated namespaces; these are not TEST-NET documentation addresses.",
     "FTP username/password were synthetic lab values and are redacted in submitted transcripts; no host account or real data used.",
     "Telnet frame 6 contains inetutils negotiation bytes; FTP frames include USER/PASS/230, EPSV/229, RETR/125/226 and a separate data four-tuple.",
-    "Dedicated active-mode capture is captures/real-app-netns/ftp-active.pcapng; EPRT/LIST/226 fields are in ftp-active.frames.tsv."
+    "result.frames counts all frames in the original telnet+ftp capture pair: 7 + 64 = 71. The separate active supplement adds 36 frames, making 107 across all three files.",
+    "ftp.pcapng frames 1-42 contain passive RETR; frames 43-64 contain only login/session commands, not an active data transfer. ftp-active.log records that unsuccessful client command attempt, not the dedicated active capture.",
+    "The dedicated active capture has control port 2122 and a server-initiated data SYN from port 48707, not port 20. EPRT/LIST/226 fields are in ftp-active.frames.tsv.",
+    "Top-level command, environment, capture_point and capture_filter describe the original telnet+ftp experiment, not verified provenance for the active supplement. See species/ftp/capture-reading.md for the remaining reproduction gap."
   ],
   "evidence_level": "real-capture"
 }
