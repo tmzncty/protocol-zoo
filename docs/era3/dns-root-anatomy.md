@@ -34,7 +34,7 @@ cn.   → ...
 
 不是「全世界域名 → IP」的数据库。根是委派链条的起点，站在树根说「你想找 .com？往这边走」。
 
-## root hints：DNS 的启动锚点
+## root hints：DNS 的启动种子
 
 递归解析器第一次工作时并不知道任何东西，唯一的先验是内置的 **root hints** 文件（IANA 维护，列 13 个身份的地址）。由此引出一个漂亮的递归问题的解法：
 
@@ -42,7 +42,7 @@ cn.   → ...
 我要查域名 → 要找 DNS → DNS 自己也是域名 → ……
 ```
 
-DNS 的答案：出生时只写死「根服务器地址」这一小段信任锚，其余全部通过 referral 逐级发现。结构与系统启动链同构：
+DNS 的答案：出生时只写死「根服务器地址」这一小段启动种子（bootstrap locator），其余全部通过 referral 逐级发现。注意 root hints 只是定位种子，不是 DNSSEC 意义下的信任锚——那套密码学信任锚是根 KSK（root trust anchor），两者常被混称但角色不同。结构与系统启动链同构：
 
 ```text
 BIOS/UEFI → Bootloader → Kernel → 整个系统
