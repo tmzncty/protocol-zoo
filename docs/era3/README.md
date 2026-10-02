@@ -25,7 +25,8 @@ H. The End-to-End Principle Under Pressure  · TLS、终止点与责任边界
 - [`TRACEROUTE.md`](TRACEROUTE.md)：M19 TTL/Hop Limit 方法、probe family 与 `*` 的证据含义；
 - [`DHCP-INTEGRATION.md`](DHCP-INTEGRATION.md)：M20 DORA 到 TFTP 的本地 packet-evidence 闭环；
 - [`TCP-UDP-WAN.md`](TCP-UDP-WAN.md)：M29–M30 transport 契约、受控 WAN 失败与 L4 门槛；
-- [`FAILURE-GALLERY.md`](FAILURE-GALLERY.md)：M33 timeout、权限与 application 未闭环的失败证据。
+- [`FAILURE-GALLERY.md`](FAILURE-GALLERY.md)：M33 timeout、权限与 application 未闭环的失败证据；
+- [`dns-root-anatomy.md`](dns-root-anatomy.md)：现代 DNS 根解剖——13 身份 / 12 运营者 / 2000+ Anycast 实例、root hints 启动种子（bootstrap locator，非 DNSSEC 信任锚）与缓存经济学。
 
 每章区分：当时的问题、当时提出的方案、最终占主导的实现、今天仍存活的部分，以及不应倒投回历史的现代解释。没有实验记录的主张不会被写成真实抓包结论。
 
