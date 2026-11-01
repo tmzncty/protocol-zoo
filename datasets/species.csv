@@ -12,3 +12,4 @@ UDP-Lite,transport,RFC 3828,RFC 3828,specialized,Linux kernel,udplite,UDPLite,me
 GRE,network,RFC 2784,RFC 2890,specialized,Linux iproute2,gre,GRE,high,none without outer security
 IP-in-IP,network,RFC 2003,RFC 2003,specialized,Linux iproute2,ip,IP,high,none without outer security
 AppleTalk,network,historical AppleTalk docs,AppleTalk docs,obsolete,legacy Apple/BSD stacks,aarp/ddp/atp,AppleTalk,very high,legacy trust/broadcast
+tus,application,tus 1.0.0 (2016),tus 1.0.0 + creation/termination/concatenation/checksum,alive/narrow,"tusd (Go reference server), tus-js-client, Uppy tus plugin",http (generic HTTP dissector),HTTP,low,no built-in authentication; trust delegated to outer token or signed URL
